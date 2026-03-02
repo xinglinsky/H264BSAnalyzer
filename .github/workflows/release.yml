@@ -1,0 +1,122 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build ${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            artifact_name: h264bsanalyzer-linux-x86_64
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            artifact_name: h264bsanalyzer-windows-x86_64
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            artifact_name: h264bsanalyzer-macos-aarch64
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: release-${{ matrix.target }}
+
+      - name: Build (release)
+        run: cargo build --release --target ${{ matrix.target }}
+
+      - name: Prepare artifact (Linux)
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          cp target/${{ matrix.target }}/release/h264bsanalyzer h264bsanalyzer
+          strip h264bsanalyzer 2>/dev/null || true
+          chmod +x h264bsanalyzer
+
+      - name: Prepare artifact (Windows)
+        if: matrix.os == 'windows-latest'
+        shell: pwsh
+        run: |
+          Copy-Item target/${{ matrix.target }}/release/h264bsanalyzer.exe .
+          Compress-Archive -Path h264bsanalyzer.exe -DestinationPath ${{ matrix.artifact_name }}.zip
+
+      - name: Prepare artifact (macOS)
+        if: matrix.os == 'macos-latest'
+        run: |
+          cp target/${{ matrix.target }}/release/h264bsanalyzer ${{ matrix.artifact_name }}
+          strip ${{ matrix.artifact_name }} 2>/dev/null || true
+          chmod +x ${{ matrix.artifact_name }}
+          mv ${{ matrix.artifact_name }} h264bsanalyzer
+
+      - name: Upload artifact (Linux)
+        if: matrix.os == 'ubuntu-latest'
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact_name }}
+          path: h264bsanalyzer
+
+      - name: Upload artifact (Windows)
+        if: matrix.os == 'windows-latest'
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact_name }}
+          path: ${{ matrix.artifact_name }}.zip
+
+      - name: Upload artifact (macOS)
+        if: matrix.os == 'macos-latest'
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact_name }}
+          path: h264bsanalyzer
+
+  release:
+    name: Create Release
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: release-artifacts
+          merge-multiple: false
+
+      - name: Rename for Release (Linux)
+        run: |
+          if [ -f release-artifacts/h264bsanalyzer-linux-x86_64/h264bsanalyzer ]; then
+            mv release-artifacts/h264bsanalyzer-linux-x86_64/h264bsanalyzer release-artifacts/h264bsanalyzer-linux-x86_64/h264bsanalyzer-linux-x86_64
+          fi
+
+      - name: Rename for Release (macOS)
+        run: |
+          if [ -f release-artifacts/h264bsanalyzer-macos-aarch64/h264bsanalyzer ]; then
+            mv release-artifacts/h264bsanalyzer-macos-aarch64/h264bsanalyzer release-artifacts/h264bsanalyzer-macos-aarch64/h264bsanalyzer-macos-aarch64
+          fi
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          draft: false
+          generate_release_notes: true
+          files: |
+            release-artifacts/h264bsanalyzer-linux-x86_64/h264bsanalyzer-linux-x86_64
+            release-artifacts/h264bsanalyzer-windows-x86_64/h264bsanalyzer-windows-x86_64.zip
+            release-artifacts/h264bsanalyzer-macos-aarch64/h264bsanalyzer-macos-aarch64
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
