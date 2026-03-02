@@ -584,7 +584,47 @@ fn paint_start_page(ui: &mut egui::Ui, app: &mut App) {
         }
         ui.add_space(8.0);
         ui.label(egui::RichText::new("or drag a file into this window").color(ui.visuals().weak_text_color()));
-        ui.add_space(20.0);
+        if !app.recent_file_paths.is_empty() {
+            ui.add_space(16.0);
+            ui.separator();
+            ui.add_space(8.0);
+            ui.label(egui::RichText::new("Recent").size(12.0).color(ui.visuals().weak_text_color()));
+            ui.add_space(4.0);
+            let recent: Vec<PathBuf> = app.recent_file_paths.iter().take(10).cloned().collect();
+            let full_w = ui.available_width();
+            const MAX_NAME_CHARS: usize = 22;
+            egui::ScrollArea::vertical()
+                .max_height(160.0)
+                .show(ui, |ui| {
+                    ui.set_min_width(full_w);
+                    for chunk in recent.chunks(2) {
+                        ui.horizontal(|ui| {
+                            let half = (ui.available_width() - ui.spacing().item_spacing.x) / 2.0;
+                            for path in chunk {
+                                let label = path
+                                    .file_name()
+                                    .map(|n| n.to_string_lossy().into_owned())
+                                    .unwrap_or_else(|| path.display().to_string());
+                                let display = if label.chars().count() > MAX_NAME_CHARS {
+                                    format!("{}…", label.chars().take(MAX_NAME_CHARS - 1).collect::<String>())
+                                } else {
+                                    label.clone()
+                                };
+                                let full = path.display().to_string();
+                                ui.scope(|ui| {
+                                    ui.set_min_width(half);
+                                    ui.set_max_width(half);
+                                    if ui.link(&display).on_hover_text(&full).clicked() {
+                                        app.load_file(path.clone());
+                                    }
+                                });
+                            }
+                        });
+                    }
+                });
+            ui.add_space(8.0);
+        }
+        ui.add_space(12.0);
         ui.separator();
         ui.add_space(12.0);
         ui.label(egui::RichText::new("Supported: .h264 .264 .avc .h265 .265 .hevc").size(12.0).color(ui.visuals().weak_text_color()));

@@ -5,6 +5,7 @@ pub mod parser;
 pub mod decode;
 pub mod export;
 pub mod gui;
+pub mod cli;
 
 pub use model::{
     FileType, NaluInfo, NalUnitType, ParseResult, SliceType, SpsInfo, PpsInfo, guess_file_type,
