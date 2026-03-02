@@ -11,4 +11,5 @@ pub use model::{
 };
 pub use parser::{
     parse_file, parse_h264_file, parse_h265_file, parse_nal_detail, scan_nal_units, tree_text_for_nal,
+    tree_text_for_nal_h265,
 };

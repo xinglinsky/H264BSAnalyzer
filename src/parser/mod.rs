@@ -9,6 +9,8 @@ pub use h264::parse_h264_file;
 pub use h264::parse_nal_detail;
 pub use h264::tree_text_for_nal;
 pub use h265::parse_h265_file;
+pub use h265::tree_text_for_nal_h265;
+pub use h265::h265_nal_type_name;
 
 use std::fs;
 use std::path::Path;

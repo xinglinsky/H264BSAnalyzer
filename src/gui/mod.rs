@@ -9,9 +9,11 @@ use std::path::{Path, PathBuf};
 
 use crate::decode::{DecodedFrame, Decoder};
 use crate::export::{export_bmp, export_jpeg, export_rgb, export_yuv};
-use crate::model::{NaluInfo, NalUnitType, ParseResult, SliceType};
+use crate::model::{FileType, NaluInfo, NalUnitType, ParseResult, SliceType};
 use crate::parser::parse_file;
+use crate::parser::h265_nal_type_name;
 use crate::tree_text_for_nal;
+use crate::tree_text_for_nal_h265;
 
 /// UI theme: dark (default) or light.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -37,6 +39,9 @@ pub struct App {
     theme: Theme,
     /// Recent file paths, max 10, newest first; persisted to config.
     recent_file_paths: Vec<PathBuf>,
+    help_show_about: bool,
+    help_show_license: bool,
+    help_show_shortcuts: bool,
 }
 
 impl Default for App {
@@ -51,6 +56,9 @@ impl Default for App {
             playback_playing: false,
             theme: Theme::Dark,
             recent_file_paths: Vec::new(),
+            help_show_about: false,
+            help_show_license: false,
+            help_show_shortcuts: false,
         }
     }
 }
@@ -312,8 +320,18 @@ impl eframe::App for App {
                     });
                 });
                 ui.menu_button("Help", |ui| {
-                    if ui.button("About").clicked() {
+                    ui.set_min_width(180.0);
+                    if ui.button("About").on_hover_text("Application info and version").clicked() {
                         ui.close_menu();
+                        self.help_show_about = true;
+                    }
+                    if ui.button("License").on_hover_text("MIT License text").clicked() {
+                        ui.close_menu();
+                        self.help_show_license = true;
+                    }
+                    if ui.button("Keyboard shortcuts").on_hover_text("Shortcut reference").clicked() {
+                        ui.close_menu();
+                        self.help_show_shortcuts = true;
                     }
                 });
             });
@@ -323,6 +341,56 @@ impl eframe::App for App {
             egui::TopBottomPanel::top("error").show(ctx, |ui| {
                 ui.colored_label(egui::Color32::RED, err);
             });
+        }
+
+        if self.help_show_about {
+            egui::Window::new("About")
+                .collapsible(false)
+                .resizable(false)
+                .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+                .show(ctx, |ui| {
+                    ui.heading("H264BSAnalyzer");
+                    ui.label(format!("Version {}", env!("CARGO_PKG_VERSION")));
+                    ui.add_space(4.0);
+                    ui.label("H.264 / H.265 bitstream analyzer — NAL list, hex view, SPS/PPS/VPS/slice parsing.");
+                    ui.add_space(4.0);
+                    ui.label("MIT License");
+                    ui.add_space(8.0);
+                    if ui.button("OK").clicked() {
+                        self.help_show_about = false;
+                    }
+                });
+        }
+        if self.help_show_license {
+            egui::Window::new("License")
+                .default_width(420.0)
+                .default_height(320.0)
+                .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+                .show(ctx, |ui| {
+                    egui::ScrollArea::vertical().show(ui, |ui| {
+                        ui.label(include_str!("../../LICENSE"));
+                    });
+                    ui.add_space(4.0);
+                    if ui.button("Close").clicked() {
+                        self.help_show_license = false;
+                    }
+                });
+        }
+        if self.help_show_shortcuts {
+            egui::Window::new("Keyboard shortcuts")
+                .collapsible(false)
+                .resizable(false)
+                .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+                .show(ctx, |ui| {
+                    ui.label("File → Open: open H.264/H.265 file");
+                    ui.label("File → Recent: reopen a recent file");
+                    ui.label("NAL list: click a row to select and view hex / parsing detail");
+                    ui.label("View → Theme: switch Dark / Light");
+                    ui.add_space(8.0);
+                    if ui.button("Close").clicked() {
+                        self.help_show_shortcuts = false;
+                    }
+                });
         }
 
         egui::CentralPanel::default().show(ctx, |ui| {
@@ -364,8 +432,10 @@ impl eframe::App for App {
 
             if let Some(ref res) = self.result {
                 let avail = ui.available_rect_before_wrap();
-                let left_w = (avail.width() * 0.62).max(320.0);
-                let right_w = (avail.width() * 0.36).max(280.0);
+                let nal_table_min_w = NAL_COL_NO + NAL_COL_OFFSET + NAL_COL_LEN + NAL_COL_START + NAL_COL_TYPE + NAL_COL_INFO + NAL_CELL_PAD * 2.0;
+                let left_w = (avail.width() * 0.60).max(280.0).max(nal_table_min_w);
+                let col_type_w = NAL_COL_TYPE + (left_w - nal_table_min_w).max(0.0);
+                let right_w = (avail.width() - left_w - 8.0).max(260.0);
                 let full_h = avail.height();
                 let nal_table_h = (full_h * 0.55).max(200.0).min(full_h - 140.0);
                 let hex_view_h = (full_h - nal_table_h - 32.0).max(100.0);
@@ -382,7 +452,7 @@ impl eframe::App for App {
                         {
                             let row_h = ui.text_style_height(&egui::TextStyle::Body) + 4.0;
                             let (rect, _) = ui.allocate_exact_size(
-                                egui::Vec2::new(ui.available_width(), row_h),
+                                egui::Vec2::new(left_w, row_h),
                                 egui::Sense::hover(),
                             );
                             let font_id = egui::FontId::proportional(12.0);
@@ -398,10 +468,10 @@ impl eframe::App for App {
                             ui.painter().text(egui::Pos2::new(x, y), egui::Align2::LEFT_TOP, "Start Code", font_id.clone(), fg);
                             x += NAL_COL_START;
                             ui.painter().text(egui::Pos2::new(x, y), egui::Align2::LEFT_TOP, "NAL Type", font_id.clone(), fg);
-                            x += NAL_COL_TYPE;
+                            x += col_type_w;
                             ui.painter().text(egui::Pos2::new(x, y), egui::Align2::LEFT_TOP, "Info", font_id.clone(), fg);
                         }
-                        if let Some(clicked) = paint_nal_table(ui, res, self.selected_nal_index, nal_table_h, self.theme.is_dark()) {
+                        if let Some(clicked) = paint_nal_table(ui, res, self.selected_nal_index, nal_table_h, self.theme.is_dark(), left_w) {
                             self.selected_nal_index = Some(clicked);
                         }
                         ui.add_space(4.0);
@@ -437,41 +507,37 @@ impl eframe::App for App {
                     ui.separator();
 
                     ui.vertical(|ui| {
+                        ui.set_min_width(right_w);
                         ui.set_max_width(right_w);
+                        ui.add_space(2.0);
+                        ui.strong("File Information");
+                        paint_file_info(ui, res);
+                        ui.add_space(4.0);
+                        ui.separator();
+                        ui.add_space(4.0);
+                        let remaining_h = ui.available_rect_before_wrap().height();
                         egui::ScrollArea::vertical()
-                            .max_height(avail.height())
+                            .max_height(remaining_h)
                             .show(ui, |ui| {
                                 ui.set_max_width(right_w);
-                                ui.vertical(|ui| {
-                                    ui.add_space(2.0);
-                                    ui.strong("File Information");
-                                    let file_info_h = 200.0;
-                                    let (rect, _) = ui.allocate_exact_size(
-                                        egui::Vec2::new(ui.available_width(), file_info_h),
-                                        egui::Sense::hover(),
-                                    );
-                                    ui.allocate_new_ui(
-                                        egui::UiBuilder::default().max_rect(rect),
-                                        |ui| paint_file_info(ui, res),
-                                    );
-                                    ui.add_space(4.0);
-                                    ui.separator();
-                                    ui.add_space(4.0);
-                                    egui::CollapsingHeader::new("NAL Parsing Information")
-                                        .default_open(true)
-                                        .show(ui, |ui| {
-                                            if let Some(idx) = self.selected_nal_index {
-                                                if idx < res.nalus.len() {
-                                                    let detail = tree_text_for_nal(&res.nalus[idx].raw);
-                                                    paint_nal_detail_foldable(ui, &detail, right_w);
-                                                } else {
-                                                    ui.weak("Select a NAL");
-                                                }
+                                egui::CollapsingHeader::new("NAL Parsing Information")
+                                    .default_open(true)
+                                    .show(ui, |ui| {
+                                        if let Some(idx) = self.selected_nal_index {
+                                            if idx < res.nalus.len() {
+                                                let detail = match res.file_type {
+                                                    FileType::H265 => tree_text_for_nal_h265(&res.nalus[idx].raw),
+                                                    _ => tree_text_for_nal(&res.nalus[idx].raw),
+                                                };
+                                                paint_nal_detail_foldable(ui, &detail, right_w);
                                             } else {
                                                 ui.weak("Select a NAL");
                                             }
-                                        });
-                                });
+                                        } else {
+                                            ui.weak("Select a NAL");
+                                        }
+                                    });
+                                ui.add_space(24.0);
                             });
                     });
                 });
@@ -534,15 +600,7 @@ fn paint_start_page(ui: &mut egui::Ui, app: &mut App) {
 
 fn nal_type_description(n: &NaluInfo) -> &'static str {
     if let Some(t) = n.h265_nal_type {
-        return match t {
-            32 => "Video parameter set",
-            33 => "Sequence parameter set",
-            34 => "Picture parameter set",
-            39 => "Supplemental enhancement info...",
-            1 | 19 => "Coded slice of a non-IDR picture",
-            0 | 18 => "Coded slice of an IDR picture",
-            _ => "NAL unit",
-        };
+        return h265_nal_type_name(t);
     }
     match n.nal_type {
         NalUnitType::Sps => "Sequence parameter set",
@@ -564,8 +622,9 @@ fn nal_info_short(res: &ParseResult, index: usize) -> String {
             33 => "SPS".to_string(),
             34 => "PPS".to_string(),
             39 => "SEI".to_string(),
-            0 | 18 => format!("IDR #{}", idr_count(res, index)),
-            1 | 19 => format!("P Slice #{}", p_slice_count(res, index)),
+            6 | 7 | 8 | 9 | 16 | 17 | 18 | 19 | 20 => format!("IDR #{}", idr_count_h265(res, index)),
+            1 | 3 | 5 => format!("P Slice #{}", p_slice_count_h265(res, index)),
+            0 | 2 | 4 => format!("B Slice #{}", b_slice_count_h265(res, index)),
             _ => format!("Type {}", t),
         };
     }
@@ -595,11 +654,37 @@ fn idr_count(res: &ParseResult, up_to: usize) -> usize {
         .saturating_sub(1)
 }
 
+fn idr_count_h265(res: &ParseResult, up_to: usize) -> usize {
+    let end = up_to.min(res.nalus.len().saturating_sub(1));
+    const H265_IRAP: &[u8] = &[6, 7, 8, 9, 16, 17, 18, 19, 20];
+    res.nalus[..=end]
+        .iter()
+        .filter(|n| n.h265_nal_type.map(|t| H265_IRAP.contains(&t)).unwrap_or(false))
+        .count()
+        .saturating_sub(1)
+}
+
 fn p_slice_count(res: &ParseResult, up_to: usize) -> usize {
     let end = up_to.min(res.nalus.len().saturating_sub(1));
     res.nalus[..=end]
         .iter()
         .filter(|n| (n.nal_type == NalUnitType::NonIdrSlice && n.slice_type == SliceType::P) || n.h265_nal_type == Some(1) || n.h265_nal_type == Some(19))
+        .count()
+}
+
+fn p_slice_count_h265(res: &ParseResult, up_to: usize) -> usize {
+    let end = up_to.min(res.nalus.len().saturating_sub(1));
+    res.nalus[..=end]
+        .iter()
+        .filter(|n| n.h265_nal_type == Some(1) || n.h265_nal_type == Some(3) || n.h265_nal_type == Some(5))
+        .count()
+}
+
+fn b_slice_count_h265(res: &ParseResult, up_to: usize) -> usize {
+    let end = up_to.min(res.nalus.len().saturating_sub(1));
+    res.nalus[..=end]
+        .iter()
+        .filter(|n| n.h265_nal_type == Some(0) || n.h265_nal_type == Some(2) || n.h265_nal_type == Some(4))
         .count()
 }
 
@@ -628,10 +713,11 @@ fn slice_count(res: &ParseResult, up_to: usize) -> usize {
 }
 
 const NAL_COL_NO: f32 = 32.0;
-const NAL_COL_OFFSET: f32 = 56.0;
-const NAL_COL_LEN: f32 = 40.0;
+const NAL_COL_OFFSET: f32 = 72.0;
+const NAL_COL_LEN: f32 = 56.0;
 const NAL_COL_START: f32 = 72.0;
-const NAL_COL_TYPE: f32 = 220.0;
+const NAL_COL_TYPE: f32 = 288.0;
+const NAL_COL_INFO: f32 = 92.0;
 const NAL_CELL_PAD: f32 = 4.0;
 
 /// Truncate string to at most max_chars, append … if truncated.
@@ -708,19 +794,22 @@ fn paint_nal_table(
     selected: Option<usize>,
     max_height: f32,
     dark: bool,
+    table_available_width: f32,
 ) -> Option<usize> {
     let row_h = ui.text_style_height(&egui::TextStyle::Body) + 4.0;
     let mut clicked = None;
     let scroll_id = ui.id().with("nal_list_scroll");
-    const TYPE_CHARS: usize = 36;
-    const INFO_CHARS: usize = 12;
+    const TYPE_CHARS: usize = 34;
+    const INFO_CHARS: usize = 14;
+    let base_width = NAL_COL_NO + NAL_COL_OFFSET + NAL_COL_LEN + NAL_COL_START + NAL_COL_TYPE + NAL_COL_INFO + NAL_CELL_PAD * 2.0;
+    let full_width = table_available_width.max(base_width);
+    let col_type_w = NAL_COL_TYPE + (full_width - base_width).max(0.0);
     egui::ScrollArea::vertical()
         .id_salt(scroll_id)
         .max_height(max_height)
         .min_scrolled_height(max_height)
         .drag_to_scroll(true)
         .show_rows(ui, row_h, res.nalus.len(), |ui, row_range| {
-            let full_width = ui.available_width();
             let font_id = egui::FontId::monospace(12.0);
             for i in row_range {
                 ui.push_id(i, |ui| {
@@ -737,6 +826,7 @@ fn paint_nal_table(
                     };
                     let col_type = truncate_str(nal_type_description(n), TYPE_CHARS);
                     let col_info = truncate_str(&nal_info_short(res, i), INFO_CHARS);
+                    let len_str = n.raw.len().to_string();
                     let (rect, resp) = ui.allocate_exact_size(
                         egui::Vec2::new(full_width, row_h),
                         egui::Sense::click(),
@@ -745,21 +835,24 @@ fn paint_nal_table(
                         clicked = Some(i);
                     }
                     ui.painter().rect_filled(rect, 0.0, bg);
-                    let mut x = rect.min.x + NAL_CELL_PAD;
                     let y = rect.min.y + 2.0;
+                    let mut x = rect.min.x + NAL_CELL_PAD;
                     let clip = rect;
                     let painter = ui.painter().with_clip_rect(clip);
-                    painter.text(egui::Pos2::new(x, y), egui::Align2::LEFT_TOP, format!("{}", i), font_id.clone(), fg);
-                    x += NAL_COL_NO;
-                    painter.text(egui::Pos2::new(x, y), egui::Align2::LEFT_TOP, format!("{:08x}", n.offset), font_id.clone(), fg);
-                    x += NAL_COL_OFFSET;
-                    painter.text(egui::Pos2::new(x, y), egui::Align2::LEFT_TOP, format!("{}", n.len), font_id.clone(), fg);
-                    x += NAL_COL_LEN;
-                    painter.text(egui::Pos2::new(x, y), egui::Align2::LEFT_TOP, &start_code_hex, font_id.clone(), fg);
-                    x += NAL_COL_START;
-                    painter.text(egui::Pos2::new(x, y), egui::Align2::LEFT_TOP, &col_type, font_id.clone(), fg);
-                    x += NAL_COL_TYPE;
-                    painter.text(egui::Pos2::new(x, y), egui::Align2::LEFT_TOP, &col_info, font_id.clone(), fg);
+
+                    let mut draw_cell = |cell_w: f32, text: &str| {
+                        let cell = egui::Rect::from_min_size(egui::Pos2::new(x, rect.min.y), egui::Vec2::new(cell_w, row_h));
+                        let p = painter.with_clip_rect(cell);
+                        p.text(egui::Pos2::new(x, y), egui::Align2::LEFT_TOP, text, font_id.clone(), fg);
+                        x += cell_w;
+                    };
+
+                    draw_cell(NAL_COL_NO, &format!("{}", i));
+                    draw_cell(NAL_COL_OFFSET, &format!("{:08x}", n.offset));
+                    draw_cell(NAL_COL_LEN, &len_str);
+                    draw_cell(NAL_COL_START, &start_code_hex);
+                    draw_cell(col_type_w, &col_type);
+                    draw_cell(NAL_COL_INFO, &col_info);
                 });
             }
         });
@@ -818,6 +911,7 @@ fn paint_nal_detail_foldable(ui: &mut egui::Ui, detail: &str, _max_w: f32) {
     let sections = nal_detail_sections(detail);
     if sections.is_empty() {
         ui.monospace(detail);
+        ui.add_space(16.0);
         return;
     }
     for (title, lines) in sections {
@@ -827,31 +921,49 @@ fn paint_nal_detail_foldable(ui: &mut egui::Ui, detail: &str, _max_w: f32) {
                 for line in lines {
                     ui.monospace(line);
                 }
+                ui.add_space(8.0);
             });
     }
+    ui.add_space(8.0);
 }
 
 fn paint_file_info(ui: &mut egui::Ui, res: &ParseResult) {
     let title = match res.file_type {
-        crate::model::FileType::H264 => "H.264/AVC",
-        crate::model::FileType::H265 => "H.265/HEVC",
+        FileType::H264 => "H.264/AVC",
+        FileType::H265 => "H.265/HEVC",
         _ => "File",
     };
     ui.label(title);
     if let Some(ref s) = res.sps_info {
         ui.label(format!("Picture Size: {}x{}", s.width, s.height));
-        ui.label(format!("Cropping L/R/T/B: {} {} {} {}", s.crop_left, s.crop_right, s.crop_top, s.crop_bottom));
+        ui.label(format!("Cropping Left: {}  Cropping Right: {}  Cropping Top: {}  Cropping Bottom: {}", s.crop_left, s.crop_right, s.crop_top, s.crop_bottom));
         ui.label("Video Format: YUV420 Luma bit: 8 Chroma bit: 8");
-        let profile = match s.profile_idc {
-            66 => "Baseline",
-            77 => "Main",
-            88 => "Extended",
-            100 => "High",
-            _ => "Profile",
+        let stream_str = match res.file_type {
+            FileType::H265 => {
+                let profile = match s.profile_idc {
+                    1 => "Main Profile",
+                    2 => "Main 10 Profile",
+                    3 => "Main Still Picture",
+                    _ => "Profile",
+                };
+                let level_str = level_idc_to_tier_level(s.level_idc);
+                format!("Stream Type: {} @ Level {}({}) Tier Main", profile, level_str, s.level_idc)
+            }
+            _ => {
+                let profile = match s.profile_idc {
+                    66 => "Baseline",
+                    77 => "Main",
+                    88 => "Extended",
+                    100 => "High",
+                    _ => "Profile",
+                };
+                format!("Stream Type: {} Profile @ Level {}", profile, s.level_idc)
+            }
         };
-        ui.label(format!("Stream: {} Profile @ Level {}", profile, s.level_idc));
+        ui.label(stream_str);
         if let Some(ref p) = res.pps_info {
-            ui.label(format!("Encoding: {}", if p.entropy_coding_mode_flag { "CABAC" } else { "CAVLC" }));
+            let enc = if p.entropy_coding_mode_flag { "CABAC" } else { "CAVLC" };
+            ui.label(format!("Encoding Type: {}", enc));
         }
         if s.max_framerate > 0.0 {
             ui.label(format!("Max fps: {:.3}", s.max_framerate));
@@ -863,6 +975,36 @@ fn paint_file_info(ui: &mut egui::Ui, res: &ParseResult) {
         ui.label(format!("Frame Count: {}", frame_count));
     } else {
         ui.weak("No SPS info (H.265 or unsupported)");
+    }
+}
+
+/// HEVC level_idc to "4" style string (level_idc 120 -> 4.0, 90 -> 3.0, etc.).
+fn level_idc_to_tier_level(level_idc: u8) -> String {
+    let (major, minor) = match level_idc {
+        30 => (1, 0),
+        60 => (2, 0),
+        63 => (2, 1),
+        90 => (3, 0),
+        93 => (3, 1),
+        111 => (3, 2),
+        120 => (4, 0),
+        123 => (4, 1),
+        126 => (4, 2),
+        153 => (5, 0),
+        156 => (5, 1),
+        159 => (5, 2),
+        162 => (5, 3),
+        180 => (6, 0),
+        183 => (6, 1),
+        186 => (6, 2),
+        189 => (6, 3),
+        192 => (6, 4),
+        _ => (0, 0),
+    };
+    if minor == 0 {
+        format!("{}", major)
+    } else {
+        format!("{}.{}", major, minor)
     }
 }
 
